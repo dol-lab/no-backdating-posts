@@ -1,0 +1,23 @@
+{
+	"name": "dol-lab/no-backdating-posts",
+	"description": "A simple WordPress plugin to prevent backdating of posts and pages.",
+	"type": "wordpress-plugin",
+	"license": "GPL-3.0-or-later",
+	"authors": [
+		{
+			"name": "Vitus Schuhwerk",
+			"email": "vitus.schuhwerk@gmail.com"
+		}
+	],
+	"require": {
+		"php": ">=8.1"
+	},
+	"require-dev": {
+		"squizlabs/php_codesniffer": "^3.5",
+		"wp-coding-standards/wpcs": "^2.3"
+	},
+	"scripts": {
+		"phpcs": "phpcs --standard=WordPress .",
+		"phpcbf": "phpcbf --standard=WordPress ."
+	}
+}
