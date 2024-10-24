@@ -2,6 +2,7 @@
 /**
  * Plugin Name: No Backdating Posts
  * Plugin URI: https://github.com/dol-lab/no-backdating-posts
+ * GitHub Plugin URI: https://github.com/dol-lab/no-backdating-posts
  * Description: Prevents backdating of posts (and pages by default).
  * Version: 0.5.0
  * Author: Vitus Schuhwerk
@@ -17,11 +18,14 @@ if ( ! defined( 'WPINC' ) ) {
 	die;
 }
 
-define( 'NO_BACKDATING_VERSION', '1.0.0' );
-add_filter( 'wp_insert_post_data', 'no_backdating_on_insert', 10, 4 );
+define( 'NO_BACKDATING_VERSION', '1.0.1' );
+
+add_filter( 'wp_insert_post_data', 'no_backdating_on_insert_update', 10, 4 );
 add_action( 'wp_ajax_check_backdate_notice', 'no_backdating_ajax' );
 add_action( 'enqueue_block_editor_assets', 'no_backdating_enqueue_scripts' );
 
+// @todo: alter editor.
+// @todo: draft to ...
 
 /**
  * Disallow backdating of new and existing posts.
@@ -31,6 +35,20 @@ add_action( 'enqueue_block_editor_assets', 'no_backdating_enqueue_scripts' );
  *
  * A warning notice will be displayed in classic editor (<- untested) and gutenberg.
  *
+ * @todo: i refactored this to use 'post_date_gmt'. Should probably use 'post_date' instead (because post_date_gmt is not set sometimes).
+ *
+ * Capabilities:
+ * - 'backdate_posts': Allow backdating for all post types
+ * - 'backdate_{post_type}': Allow backdating for specific post type
+ *
+ * Filters:
+ * - 'no_backdating_post_types': Array of post types to prevent backdating
+ * - 'no_backdating_grace_period': Grace period in seconds (default: 1 hour)
+ *
+ * More Background:
+ * - When a post is in draft status publishing changes the post_date to "now" by default. When a post is updated,
+ *   post_date stays the same (post_modified is updated).
+ *
  * @param array $data                An array of slashed, sanitized, and processed post data.
  * @param array $postarr             An array of sanitized (and slashed) but otherwise unmodified post data.
  * @param array $unsanitized_postarr An array of slashed yet *unsanitized* and unprocessed post data as
@@ -38,41 +56,43 @@ add_action( 'enqueue_block_editor_assets', 'no_backdating_enqueue_scripts' );
  * @param bool  $update              Whether this is an existing post being updated.
  * @return array
  */
-function no_backdating_on_insert( $data, $postarr, $unsanitized_postarr, $update ) {
+function no_backdating_on_insert_update( $data, $postarr, $unsanitized_postarr, $update ) {
 
-	// the post types that are not allowed to be backdated.
+	// the post types this is applied.
 	$post_types = apply_filters( 'no_backdating_post_types', array( 'post', 'page' ) );
 
 	if ( current_user_can( 'backdate_' . $data['post_type'] )
 	|| current_user_can( 'backdate_posts' )
 	|| ! in_array( $data['post_type'], $post_types ) ) {
-		return $data;
+		return $data; // if a user has the capability to backdate, or the post type is not in the list, do nothing.
 	}
 
-	if ( in_array( $data['post_status'], array( 'draft', 'auto-draft', 'pending' ) ) ) {
-		return $data;
-	}
-
-	$now          = current_time( 'mysql' );
-	$grace_period = apply_filters( 'no_backdating_grace_period', 1 * HOUR_IN_SECONDS );
-	$compare_date = $postarr['post_date'];
+	$grace_period = apply_filters( 'no_backdating_grace_period', HOUR_IN_SECONDS );
+	$now_gmt      = gmdate( 'Y-m-d H:i:s' );
 
 	if ( $update ) {
-		$existing_post = get_post( $postarr['ID'] );
-		$compare_date  = $existing_post->post_date;
+		$existing_post = get_post( $postarr['ID'] ); // $postarr['ID'] is set, while $data['ID'] is not set.
+		// looks like draft posts don't have valid gmt dates (yet).
+		$valid_gmt        = strtotime( $existing_post->post_date_gmt ) > 0;
+		$compare_date_gmt = $valid_gmt ? $existing_post->post_date_gmt : get_gmt_from_date( $existing_post->post_date );
+	} else {
+		$compare_date_gmt = get_gmt_from_date( $data['post_date'] ); // post_date_gmt is not set yet (when saving draft).
 	}
 
-	$earliest_allowed = min(
-		strtotime( $compare_date ),
-		strtotime( $now ) - $grace_period
+	$earliest_allowed_timestamp = min(
+		strtotime( $compare_date_gmt ),
+		strtotime( $now_gmt ) - $grace_period
 	);
 
-	if ( strtotime( $data['post_date'] ) < $earliest_allowed ) {
-		$formatted_display = date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $earliest_allowed );
-		$formatted_db      = date( 'Y-m-d H:i:s', $earliest_allowed );
+	if ( strtotime( get_gmt_from_date( $data['post_date'] ) ) < $earliest_allowed_timestamp ) {
+		$formatted_display    = wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $earliest_allowed_timestamp );
+		$earliest_allowed_gmt = date( 'Y-m-d H:i:s', $earliest_allowed_timestamp );
 
-		$data['post_date']     = $formatted_db;
-		$data['post_date_gmt'] = get_gmt_from_date( $formatted_db );
+		/**
+		 * Overwrite the post dates with the earliest allowed date.
+		 */
+		$data['post_date_gmt'] = $earliest_allowed_gmt;
+		$data['post_date']     = get_date_from_gmt( $earliest_allowed_gmt );
 
 		$message = sprintf(
 			/* translators: %s: formatted date and time */
